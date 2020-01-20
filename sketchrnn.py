@@ -18,7 +18,9 @@ class HParams():
         self.eta_min = 0.01
         self.R = 0.99995
         self.KL_min = 0.2
-        self.wKL = 0.5
+        self.wKL = 1.0
+        self.KL_start = 0.01
+        self.KL_delta = 0.03
         self.lr = 0.001
         self.lr_decay = 0.999
         self.min_lr = 0.00001
@@ -133,6 +135,7 @@ class SketchRNN():
         self.encoder_optimizer = optim.Adam(self.encoder.parameters(), hp.lr)
         self.decoder_optimizer = optim.Adam(self.decoder.parameters(), hp.lr)
         self.eta_step = hp.eta_min
+        self.KL_weight = hp.KL_start
 
     def bivariate_normal_pdf(self, dx, dy):
         z_x = ((dx-self.mu_x)/self.sigma_x)**2
@@ -155,7 +158,8 @@ class SketchRNN():
         LKL = -0.5*torch.sum(1+self.sigma-self.mu**2-torch.exp(self.sigma))\
             / float(hp.Nz * batch_size)
         KL_min = Variable(torch.Tensor([hp.KL_min]).cuda()).detach()
-        return hp.wKL*self.eta_step * torch.max(LKL,KL_min)
+        #return hp.wKL*self.eta_step * torch.max(LKL,KL_min)
+        return hp.wKL * self.KL_weight * torch.max(LKL,KL_min)
 
     # assume equal lengths
     def make_target(self, batch):
@@ -223,6 +227,9 @@ class SketchRNN():
         print("Epoch", epoch, "Loss KL", L1.item(), "Loss R", L2.item())
         self.encoder_optimizer = lr_decay(self.encoder_optimizer)
         self.decoder_optimizer = lr_decay(self.decoder_optimizer)
+        
+        if self.KL_weight < 1.0:
+            self.KL_weight += hp.KL_delta
 
         if epoch > 0 and epoch % 20 == 0:
             self.save(epoch)
@@ -368,6 +375,9 @@ class SketchRNN_Control(SketchRNN):
 
         if epoch > 0 and epoch % 20 == 0:
             self.save(epoch)
+        
+        if self.KL_weight < 1.0:
+            self.KL_weight += hp.KL_delta
 
 
 def sample_bivariate_normal(mu_x,mu_y,sigma_x,sigma_y,rho_xy, greedy=False):
