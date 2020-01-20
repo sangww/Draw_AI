@@ -306,6 +306,69 @@ class SketchRNN():
             'encoderRNN_sel_%3f_epoch_%d.pth' % (sel,epoch))
         torch.save(self.decoder.state_dict(), \
             'decoderRNN_sel_%3f_epoch_%d.pth' % (sel,epoch))
+        
+class SketchRNN_Control(SketchRNN):
+    def __init__(self):
+        super(SketchRNN_Control, self).__init__()
+        
+    def train(self, dataloader, epoch):
+        self.encoder.train()
+        self.decoder.train()
+
+        for i, data in enumerate(dataloader):
+            inputs, labels = data
+            inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+            batch_size = inputs.size(0)
+
+            # N C L -> L N C
+            inputs = inputs.permute(2, 0, 1)
+
+            #assert batch_size == hp.batch_size
+            assert batch_size == inputs.size(1)
+            assert hp.Nmax == inputs.size(0)
+            # sigma is actually sigma_hat
+            
+            stroke = inputs[:, :, :2]
+            control = inputs[:, :, 2:]
+            z, self.mu, self.sigma = self.encoder(control, labels)
+
+            sos = torch.stack([torch.Tensor([0.0, 0.0])] * batch_size).cuda().unsqueeze(0)
+
+            decoder_inputs = torch.cat([sos, stroke], 0)
+
+            z_stack = torch.stack([z] * (hp.Nmax+1))
+
+            # decoder concatenates sequence and z at every time step
+            decoder_inputs = torch.cat([decoder_inputs, z_stack], 2)
+
+            self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, self.rho_xy, \
+                hidden, cell = self.decoder(decoder_inputs, z, labels)
+
+            mask, dx, dy = self.make_target(stroke)
+
+            self.encoder_optimizer.zero_grad()
+            self.decoder_optimizer.zero_grad()
+
+            self.eta_step = 1.0 # 1.0 - (1.0 - hp.eta_min) * hp.R
+
+            L1 = self.KL_loss(batch_size)
+            L2 = self.reconstruction_loss(mask, dx, dy, batch_size)
+            loss = L1 + L2
+            loss.backward()
+
+            nn.utils.clip_grad_norm(self.encoder.parameters(), hp.grad_clip)
+            nn.utils.clip_grad_norm(self.decoder.parameters(), hp.grad_clip)
+
+            self.encoder_optimizer.step()
+            self.decoder_optimizer.step()
+
+        print("Epoch", epoch, "Loss KL", L1.item(), "Loss R", L2.item())
+        self.encoder_optimizer = lr_decay(self.encoder_optimizer)
+        self.decoder_optimizer = lr_decay(self.decoder_optimizer)
+
+        if epoch > 0 and epoch % 20 == 0:
+            self.save(epoch)
+
 
 def sample_bivariate_normal(mu_x,mu_y,sigma_x,sigma_y,rho_xy, greedy=False):
     # inputs must be floats
