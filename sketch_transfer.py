@@ -7,16 +7,21 @@ from torch import nn
 import helpers
 
 
-class EncoderRNN(nn.Module):
-    def __init__(self):
-        super(EncoderRNN, self).__init__()
+class BiLSTMEncoder(nn.Module):
+    def __init__(self, hp, style_label=False):
+        super(BiLSTMEncoder, self).__init__()
+        self.hp = hp
         self.lstm = nn.LSTM(hp.input_dim, hp.enc_hidden_size, dropout=hp.dropout, bidirectional=True)
-        self.fc_mu = nn.Linear(2*hp.enc_hidden_size + hp.style_dim, hp.Nz)
-        self.fc_sigma = nn.Linear(2*hp.enc_hidden_size + hp.style_dim, hp.Nz)
+        if style_label:
+            self.fc_mu = nn.Linear(2*hp.enc_hidden_size + hp.style_dim, hp.Nz)
+            self.fc_sigma = nn.Linear(2*hp.enc_hidden_size + hp.style_dim, hp.Nz)
+        else:
+            self.fc_mu = nn.Linear(2*hp.enc_hidden_size, hp.Nz)
+            self.fc_sigma = nn.Linear(2*hp.enc_hidden_size, hp.Nz)
 
         self.train()
 
-    def forward(self, inputs, labels, hidden_cell=None):
+    def forward(self, inputs, labels=None, hidden_cell=None):
         batch_size = inputs.size(1) # input is L N C
         if hidden_cell is None:
             hidden = torch.zeros(2, batch_size, hp.enc_hidden_size).cuda()
@@ -25,7 +30,10 @@ class EncoderRNN(nn.Module):
         _, (hidden, cell) = self.lstm(inputs, hidden_cell)
         # hidden is (2, batch_size, hidden_size), we want (batch_size, 2*hidden_size):
         hidden_forward, hidden_backward = torch.split(hidden,1,0)
-        hidden_cat = torch.cat([hidden_forward.squeeze(0), hidden_backward.squeeze(0), labels],1)
+        if labels is None:
+            hidden_cat = torch.cat([hidden_forward.squeeze(0), hidden_backward.squeeze(0)],1)
+        else:
+            hidden_cat = torch.cat([hidden_forward.squeeze(0), hidden_backward.squeeze(0), labels],1)
 
         mu = self.fc_mu(hidden_cat)
         sigma_hat = self.fc_sigma(hidden_cat)
@@ -35,25 +43,26 @@ class EncoderRNN(nn.Module):
         N = torch.normal(torch.zeros(z_size), torch.ones(z_size)).cuda()
         z = mu + sigma * N
 
-        #self.mu = mu
-        #self.sigma_hat = sigma_hat
-        #self.sigma = sigma
-
         return z, mu, sigma_hat
 
-class DecoderRNN(nn.Module):
-    def __init__(self):
-        super(DecoderRNN, self).__init__()
+class LSTMDecoder(nn.Module):
+    def __init__(self, hp, style_label=False):
+        super(LSTMDecoder, self).__init__()
+        self.hp = hp
         # to init hidden and cell from z:
-        self.fc_hc = nn.Linear(hp.Nz + hp.style_dim, 2*hp.dec_hidden_size)
+        if style_label:
+            self.fc_hc = nn.Linear(hp.Nz_dec + hp.style_dim, 2*hp.dec_hidden_size)
+        else:
+            self.fc_hc = nn.Linear(hp.Nz_dec, 2*hp.dec_hidden_size)
         # unidirectional lstm:
-        self.lstm = nn.LSTM(hp.Nz+hp.input_dim, hp.dec_hidden_size, dropout=hp.dropout)
+        self.lstm = nn.LSTM(hp.Nz_dec + hp.input_dim, hp.dec_hidden_size, dropout=hp.dropout)
         # create proba distribution parameters from hiddens:
-        self.fc_params = nn.Linear(hp.dec_hidden_size,6*hp.M) # no pen state for now...
+        self.fc_params = nn.Linear(hp.dec_hidden_size, 6*hp.M) # no pen state for now...
 
-    def forward(self, inputs, z, labels, hidden_cell=None):
+    def forward(self, inputs, z, labels=None, hidden_cell=None):
         #print ("decoder inputs", inputs.size())
-        z = torch.cat([z, labels], dim=1)
+        if labels is not None:
+            z = torch.cat([z, labels], dim=1)
         if hidden_cell is None:
             # then we must init from z
             hidden,cell = torch.split(torch.tanh(self.fc_hc(z)),hp.dec_hidden_size,1)
@@ -96,14 +105,16 @@ class DecoderRNN(nn.Module):
 
         return pi,mu_x,mu_y,sigma_x,sigma_y,rho_xy,hidden,cell
 
-class SketchRNN():
-    def __init__(self):
-        self.encoder = EncoderRNN().cuda()
-        self.decoder = DecoderRNN().cuda()
+class SketchTransfer():
+    def __init__(self, hp):
+        self.hp = hp
+        self.encoder_control = BiLSTMEncoder(hp, False)
+        self.encoder_stroke = BiLSTMEncoder(hp, True)
+        self.decoder = LSTMDecoder(hp, True)
 
-        self.encoder_optimizer = optim.Adam(self.encoder.parameters(), hp.lr)
-        self.decoder_optimizer = optim.Adam(self.decoder.parameters(), hp.lr)
-        self.eta_step = hp.eta_min
+        self.optim_control = optim.Adam(self.encoder_control.parameters(), hp.lr)
+        self.optim_stroke = optim.Adam(self.encoder_stroke.parameters(), hp.lr)
+        self.optim_decoder = optim.Adam(self.decoder.parameters(), hp.lr)
         self.KL_weight = hp.KL_start
 
     def bivariate_normal_pdf(self, dx, dy):
@@ -118,17 +129,25 @@ class SketchRNN():
     def reconstruction_loss(self, mask, dx, dy, batch_size):
         pdf = self.bivariate_normal_pdf(dx, dy)
         LS = -torch.sum(mask * torch.log(1e-5 + torch.sum(self.pi * pdf, 2)))\
-            / float(hp.Nmax * batch_size)
+            / float(self.hp.Nmax * batch_size)
         # remove pen state for now
         #LP = -torch.sum(p*torch.log(self.q))/float(Nmax*hp.batch_size)
         return LS
 
-    def KL_loss(self, batch_size):
-        LKL = -0.5*torch.sum(1+self.sigma-self.mu**2-torch.exp(self.sigma))\
-            / float(hp.Nz * batch_size)
-        KL_min = Variable(torch.Tensor([hp.KL_min]).cuda()).detach()
+    def KL_loss_control(self, batch_size):
+        LKL = -0.5*torch.sum(1+self.sigma_control - self.mu_control**2-torch.exp(self.sigma_control))\
+            / float(self.hp.Nz * batch_size)
+        KL_min = Variable(torch.Tensor([self.hp.KL_min]).cuda()).detach()
         #return hp.wKL*self.eta_step * torch.max(LKL,KL_min)
-        return hp.wKL * self.KL_weight * torch.max(LKL,KL_min)
+        return self.hp.wKL * self.KL_weight * torch.max(LKL,KL_min)
+
+    
+    def KL_loss_stroke(self, batch_size):
+        LKL = -0.5*torch.sum(1+self.sigma_stroke - self.mu_stroke**2-torch.exp(self.sigma_stroke))\
+            / float(self.hp.Nz * batch_size)
+        KL_min = Variable(torch.Tensor([self.hp.KL_min]).cuda()).detach()
+        #return hp.wKL*self.eta_step * torch.max(LKL,KL_min)
+        return self.hp.wKL * self.KL_weight * torch.max(LKL,KL_min)
 
     # assume equal lengths
     def make_target(self, batch):
@@ -136,17 +155,18 @@ class SketchRNN():
         eos = torch.stack([torch.Tensor([0.0, 0.0])] * batch_size).cuda().unsqueeze(0)
         batch = torch.cat([batch, eos], 0)
 
-        mask = torch.ones(hp.Nmax + 1, batch_size)
-        mask[hp.Nmax, :] = 0.0
+        mask = torch.ones(self.hp.Nmax + 1, batch_size)
+        mask[self.hp.Nmax, :] = 0.0
         mask = mask.cuda()
 
-        dx = torch.stack([batch.data[:, :, 0]] * hp.M, 2)
-        dy = torch.stack([batch.data[:, :, 1]] * hp.M, 2)
+        dx = torch.stack([batch.data[:, :, 0]] * self.hp.M, 2)
+        dy = torch.stack([batch.data[:, :, 1]] * self.hp.M, 2)
 
         return mask, dx, dy
 
     def train(self, dataloader, epoch):
-        self.encoder.train()
+        self.encoder_control.train()
+        self.encoder_stroke.train()
         self.decoder.train()
 
         for i, data in enumerate(dataloader):
@@ -157,16 +177,19 @@ class SketchRNN():
             # N C L -> L N C
             inputs = inputs.permute(2, 0, 1)
 
-            #assert batch_size == hp.batch_size
             assert batch_size == inputs.size(1)
-            assert hp.Nmax == inputs.size(0)
-            # sigma is actually sigma_hat
-            z, self.mu, self.sigma = self.encoder(inputs, labels)
+            assert self.hp.Nmax == inputs.size(0)
+
+            stroke = inputs[:, :, :2]
+            control = inputs[:, :, 2:]
+            z1, self.mu_control, self.sigma_control = self.encoder_control(control)
+            z2, self.mu_stroke, self.sigma_stroke = self.encoder_stroke(stroke)
 
             sos = torch.stack([torch.Tensor([0.0, 0.0])] * batch_size).cuda().unsqueeze(0)
 
-            decoder_inputs = torch.cat([sos, inputs], 0)
+            decoder_inputs = torch.cat([sos, stroke], 0)
 
+            z = torch.cat((z1, z2), dim=1)
             z_stack = torch.stack([z] * (hp.Nmax+1))
 
             # decoder concatenates sequence and z at every time step
@@ -177,31 +200,80 @@ class SketchRNN():
 
             mask, dx, dy = self.make_target(inputs)
 
-            self.encoder_optimizer.zero_grad()
-            self.decoder_optimizer.zero_grad()
+            self.optim_control.zero_grad()
+            self.optim_stroke.zero_grad()
+            self.optim_decoder.zero_grad()
 
-            self.eta_step = 1.0 # 1.0 - (1.0 - hp.eta_min) * hp.R
-
-            L1 = self.KL_loss(batch_size)
-            L2 = self.reconstruction_loss(mask, dx, dy, batch_size)
-            loss = L1 + L2
+            LKL_control = self.KL_loss_control(batch_size)
+            LKL_stroke = self.KL_loss_stroke(batch_size)
+            L_R = self.reconstruction_loss(mask, dx, dy, batch_size)
+            loss = self.hp.KL_a * LKL_control + LKL_stroke + L_R
             loss.backward()
 
-            nn.utils.clip_grad_norm(self.encoder.parameters(), hp.grad_clip)
-            nn.utils.clip_grad_norm(self.decoder.parameters(), hp.grad_clip)
+            nn.utils.clip_grad_norm_(self.encoder_control.parameters(), self.hp.grad_clip)
+            nn.utils.clip_grad_norm_(self.decoder.parameters(), self.hp.grad_clip)
+            nn.utils.clip_grad_norm_(self.encoder_stroke.parameters(), self.hp.grad_clip)
 
-            self.encoder_optimizer.step()
-            self.decoder_optimizer.step()
+            self.optim_control.step()
+            self.optim_stroke.step()
+            self.optim_decoder.step()
 
-        print("Epoch", epoch, "Loss KL", L1.item(), "Loss R", L2.item())
-        self.encoder_optimizer = lr_decay(self.encoder_optimizer)
-        self.decoder_optimizer = lr_decay(self.decoder_optimizer)
+        print("Epoch", epoch, "Loss KLcontrol", LKL_control.item(), "KLstroke", LKL_stroke.item(), \
+            "Loss R", L_R.item())
+        self.optim_control = lr_decay(self.optim_control)
+        self.optim_stroke = lr_decay(self.optim_stroke)
+        self.optim_decoder = lr_decay(self.optim_decoder)
         
         if self.KL_weight < 1.0:
-            self.KL_weight += hp.KL_delta
+            self.KL_weight += self.hp.KL_delta
 
         if epoch > 0 and epoch % 20 == 0:
             self.save(epoch)
+
+    def test_reconstruction(self, inputs, labels, greedy=False):
+        self.encoder_control.train(False)
+        self.decoder.train(False)
+        self.encoder_stroke.train(False)
+
+        # L N C
+        batch_size = inputs.size(1)
+        assert batch_size == 1
+        assert batch_size == labels.size(0)
+
+        # Encode
+        stroke = inputs[:, :, :2]
+        control = inputs[:, :, 2:]
+        z1, _, __ = self.encoder_control(control)
+        z2, _, __ = self.encoder_stroke(stroke, labels)
+        z = torch.cat((z1, z2), dim=1)
+
+        sos = Variable(torch.Tensor([0.0, 0.0]).view(1,1,-1).cuda())
+        s = sos
+        seq_x = []
+        seq_y = []
+        hidden_cell = None
+        for i in range(self.hp.Nmax):
+            decoder_inputs = torch.cat([s, z.unsqueeze(0)], 2)
+
+            # decode:
+            self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, \
+                self.rho_xy, hidden, cell = \
+                    self.decoder(decoder_inputs, z, labels, hidden_cell)
+            hidden_cell = (hidden, cell)
+            # sample from parameters:
+            #s, dx, dy, pen_down, eos = self.sample_next_state()
+            s, dx, dy = self.sample_next_state(greedy)
+            #------
+            seq_x.append(dx)
+            seq_y.append(dy)
+            #seq_z.append(pen_down)
+        # visualize result:
+
+        x_sample = np.cumsum(seq_x, 0)
+        y_sample = np.cumsum(seq_y, 0)
+        #z_sample = np.array(seq_z)
+        return x_sample, y_sample, seq_x, seq_y
+
 
     def conditional_generation(self, inputs, labels, greedy=False):
         # should remove dropouts:
@@ -282,68 +354,3 @@ class SketchRNN():
             'encoderRNN_sel_%3f_epoch_%d.pth' % (sel,epoch))
         torch.save(self.decoder.state_dict(), \
             'decoderRNN_sel_%3f_epoch_%d.pth' % (sel,epoch))
-        
-class SketchRNN_Control(SketchRNN):
-    def __init__(self):
-        super(SketchRNN_Control, self).__init__()
-        
-    def train(self, dataloader, epoch):
-        self.encoder.train()
-        self.decoder.train()
-
-        for i, data in enumerate(dataloader):
-            inputs, labels = data
-            inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
-            batch_size = inputs.size(0)
-
-            # N C L -> L N C
-            inputs = inputs.permute(2, 0, 1)
-
-            #assert batch_size == hp.batch_size
-            assert batch_size == inputs.size(1)
-            assert hp.Nmax == inputs.size(0)
-            # sigma is actually sigma_hat
-            
-            stroke = inputs[:, :, :2]
-            control = inputs[:, :, 2:]
-            z, self.mu, self.sigma = self.encoder(control, labels)
-
-            sos = torch.stack([torch.Tensor([0.0, 0.0])] * batch_size).cuda().unsqueeze(0)
-
-            decoder_inputs = torch.cat([sos, stroke], 0)
-
-            z_stack = torch.stack([z] * (hp.Nmax+1))
-
-            # decoder concatenates sequence and z at every time step
-            decoder_inputs = torch.cat([decoder_inputs, z_stack], 2)
-
-            self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, self.rho_xy, \
-                hidden, cell = self.decoder(decoder_inputs, z, labels)
-
-            mask, dx, dy = self.make_target(stroke)
-
-            self.encoder_optimizer.zero_grad()
-            self.decoder_optimizer.zero_grad()
-
-            self.eta_step = 1.0 # 1.0 - (1.0 - hp.eta_min) * hp.R
-
-            L1 = self.KL_loss(batch_size)
-            L2 = self.reconstruction_loss(mask, dx, dy, batch_size)
-            loss = L1 + L2
-            loss.backward()
-
-            nn.utils.clip_grad_norm(self.encoder.parameters(), hp.grad_clip)
-            nn.utils.clip_grad_norm(self.decoder.parameters(), hp.grad_clip)
-
-            self.encoder_optimizer.step()
-            self.decoder_optimizer.step()
-
-        print("Epoch", epoch, "Loss KL", L1.item(), "Loss R", L2.item())
-        self.encoder_optimizer = lr_decay(self.encoder_optimizer)
-        self.decoder_optimizer = lr_decay(self.decoder_optimizer)
-
-        if epoch > 0 and epoch % 20 == 0:
-            self.save(epoch)
-        
-        if self.KL_weight < 1.0:
-            self.KL_weight += hp.KL_delta
