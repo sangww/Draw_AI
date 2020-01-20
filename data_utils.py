@@ -30,11 +30,6 @@ def scale01(arr):
     arr = (arr - min_val) / (max_val - min_val)
     return arr
 
-def rotate(xs, ys, theta):
-    mat = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
-    result = np.dot(mat, np.vstack((np.array(xs), np.array(ys))))
-    return result[0, :], result[1, :]
-
 class SmoothCurve(Dataset):
     def __init__(self, filename, seg_len=100, window=100, smooth_iterations=5):
         style_data = {}
@@ -81,13 +76,10 @@ class SmoothCurve(Dataset):
                 cx_sliced = slice1d(dcx.tolist(), seg_len)
                 cy_sliced = slice1d(dcy.tolist(), seg_len)
                 for i in range(len(x_sliced)):
-                    theta = np.random.uniform(0.0, 2*np.pi)
-                    new_x, new_y = rotate(x_sliced[i], y_sliced[i], theta)
-                    new_cx, new_cy = rotate(cx_sliced[i], cy_sliced[i], theta)
-                    style_data[style][0].append(new_x)
-                    style_data[style][1].append(new_y)
-                    style_data[style][2].append(new_cx)
-                    style_data[style][3].append(new_cy)
+                    style_data[style][0].append(x_sliced[i])
+                    style_data[style][1].append(y_sliced[i])
+                    style_data[style][2].append(cx_sliced[i])
+                    style_data[style][3].append(cy_sliced[i])
         
         result = {}
         for i in range(n_styles):
