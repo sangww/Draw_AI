@@ -1,3 +1,5 @@
+import numpy as np
+
 class HParams():
     def __init__(self):
         self.input_dim = 2
@@ -12,9 +14,10 @@ class HParams():
         self.eta_min = 0.01
         self.R = 0.99995
         self.KL_min = 0.2
-        self.wKL = 1.0
+        self.wKL = 0.5
+        self.KL_a = 0.1
         self.KL_start = 0.01
-        self.KL_delta = 0.03
+        self.KL_delta = 0.01
         self.lr = 0.001
         self.lr_decay = 0.999
         self.min_lr = 0.00001

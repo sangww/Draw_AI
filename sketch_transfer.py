@@ -4,7 +4,7 @@ import numpy as np
 import torch.nn.functional as F
 import torch.optim as optim
 from torch import nn
-import helpers
+from helpers import *
 
 
 class BiLSTMEncoder(nn.Module):
@@ -24,8 +24,8 @@ class BiLSTMEncoder(nn.Module):
     def forward(self, inputs, labels=None, hidden_cell=None):
         batch_size = inputs.size(1) # input is L N C
         if hidden_cell is None:
-            hidden = torch.zeros(2, batch_size, hp.enc_hidden_size).cuda()
-            cell = torch.zeros(2, batch_size, hp.enc_hidden_size).cuda()
+            hidden = torch.zeros(2, batch_size, self.hp.enc_hidden_size).cuda()
+            cell = torch.zeros(2, batch_size, self.hp.enc_hidden_size).cuda()
             hidden_cell = (hidden, cell)
         _, (hidden, cell) = self.lstm(inputs, hidden_cell)
         # hidden is (2, batch_size, hidden_size), we want (batch_size, 2*hidden_size):
@@ -65,7 +65,7 @@ class LSTMDecoder(nn.Module):
             z = torch.cat([z, labels], dim=1)
         if hidden_cell is None:
             # then we must init from z
-            hidden,cell = torch.split(torch.tanh(self.fc_hc(z)),hp.dec_hidden_size,1)
+            hidden,cell = torch.split(torch.tanh(self.fc_hc(z)),self.hp.dec_hidden_size,1)
             hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
         outputs,(hidden,cell) = self.lstm(inputs, hidden_cell)
 
@@ -75,9 +75,9 @@ class LSTMDecoder(nn.Module):
         # and use all outputs contained in 'outputs', while in generate
         # mode we just feed with the last generated sample:
         if self.training:
-            y = self.fc_params(outputs.view(-1, hp.dec_hidden_size))
+            y = self.fc_params(outputs.view(-1, self.hp.dec_hidden_size))
         else:
-            y = self.fc_params(hidden.view(-1, hp.dec_hidden_size))
+            y = self.fc_params(hidden.view(-1, self.hp.dec_hidden_size))
 
         #print ("y", y.size())
 
@@ -92,25 +92,25 @@ class LSTMDecoder(nn.Module):
         #    print (item.size())
 
         if self.training:
-            len_out = hp.Nmax + 1
+            len_out = self.hp.Nmax + 1
         else:
             len_out = 1
 
-        pi = F.softmax(pi.transpose(0,1).squeeze()).view(len_out,-1,hp.M)
-        sigma_x = torch.exp(sigma_x.transpose(0,1).squeeze()).view(len_out,-1,hp.M)
-        sigma_y = torch.exp(sigma_y.transpose(0,1).squeeze()).view(len_out,-1,hp.M)
-        rho_xy = torch.tanh(rho_xy.transpose(0,1).squeeze()).view(len_out,-1,hp.M)
-        mu_x = mu_x.transpose(0,1).squeeze().contiguous().view(len_out,-1,hp.M)
-        mu_y = mu_y.transpose(0,1).squeeze().contiguous().view(len_out,-1,hp.M)
+        pi = F.softmax(pi.transpose(0,1).squeeze()).view(len_out,-1,self.hp.M)
+        sigma_x = torch.exp(sigma_x.transpose(0,1).squeeze()).view(len_out,-1,self.hp.M)
+        sigma_y = torch.exp(sigma_y.transpose(0,1).squeeze()).view(len_out,-1,self.hp.M)
+        rho_xy = torch.tanh(rho_xy.transpose(0,1).squeeze()).view(len_out,-1,self.hp.M)
+        mu_x = mu_x.transpose(0,1).squeeze().contiguous().view(len_out,-1,self.hp.M)
+        mu_y = mu_y.transpose(0,1).squeeze().contiguous().view(len_out,-1,self.hp.M)
 
         return pi,mu_x,mu_y,sigma_x,sigma_y,rho_xy,hidden,cell
 
 class SketchTransfer():
     def __init__(self, hp):
         self.hp = hp
-        self.encoder_control = BiLSTMEncoder(hp, False)
-        self.encoder_stroke = BiLSTMEncoder(hp, True)
-        self.decoder = LSTMDecoder(hp, True)
+        self.encoder_control = BiLSTMEncoder(hp, False).cuda()
+        self.encoder_stroke = BiLSTMEncoder(hp, True).cuda()
+        self.decoder = LSTMDecoder(hp, True).cuda()
 
         self.optim_control = optim.Adam(self.encoder_control.parameters(), hp.lr)
         self.optim_stroke = optim.Adam(self.encoder_stroke.parameters(), hp.lr)
@@ -183,14 +183,14 @@ class SketchTransfer():
             stroke = inputs[:, :, :2]
             control = inputs[:, :, 2:]
             z1, self.mu_control, self.sigma_control = self.encoder_control(control)
-            z2, self.mu_stroke, self.sigma_stroke = self.encoder_stroke(stroke)
+            z2, self.mu_stroke, self.sigma_stroke = self.encoder_stroke(stroke, labels)
 
             sos = torch.stack([torch.Tensor([0.0, 0.0])] * batch_size).cuda().unsqueeze(0)
 
             decoder_inputs = torch.cat([sos, stroke], 0)
 
             z = torch.cat((z1, z2), dim=1)
-            z_stack = torch.stack([z] * (hp.Nmax+1))
+            z_stack = torch.stack([z] * (self.hp.Nmax+1))
 
             # decoder concatenates sequence and z at every time step
             decoder_inputs = torch.cat([decoder_inputs, z_stack], 2)
@@ -198,7 +198,7 @@ class SketchTransfer():
             self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, self.rho_xy, \
                 hidden, cell = self.decoder(decoder_inputs, z, labels)
 
-            mask, dx, dy = self.make_target(inputs)
+            mask, dx, dy = self.make_target(stroke)
 
             self.optim_control.zero_grad()
             self.optim_stroke.zero_grad()
@@ -295,7 +295,7 @@ class SketchTransfer():
         seq_y = []
         #seq_z = []
         hidden_cell = None
-        for i in range(hp.Nmax):
+        for i in range(self.hp.Nmax):
             decoder_inputs = torch.cat([s,z.unsqueeze(0)], 2)
 
             # decode:
@@ -320,7 +320,7 @@ class SketchTransfer():
     def sample_next_state(self, greedy=False):
 
         def adjust_temp(pi_pdf):
-            pi_pdf = np.log(pi_pdf) / hp.temperature
+            pi_pdf = np.log(pi_pdf) / self.hp.temperature
             pi_pdf -= pi_pdf.max()
             pi_pdf = np.exp(pi_pdf)
             pi_pdf /= pi_pdf.sum()
@@ -329,7 +329,7 @@ class SketchTransfer():
         # get mixture indice:
         pi = self.pi.data[0,0,:].cpu().numpy()
         pi = adjust_temp(pi)
-        pi_idx = np.random.choice(hp.M, p=pi)
+        pi_idx = np.random.choice(self.hp.M, p=pi)
         #print (pi_idx)
         # get pen state:
         #q = self.q.data[0,0,:].cpu().numpy()
@@ -350,7 +350,9 @@ class SketchTransfer():
 
     def save(self, epoch):
         sel = np.random.rand()
-        torch.save(self.encoder.state_dict(), \
-            'encoderRNN_sel_%3f_epoch_%d.pth' % (sel,epoch))
+        torch.save(self.encoder_control.state_dict(), \
+            'sketch_encoder_control_sel_%3f_epoch_%d.pth' % (sel,epoch))
+        torch.save(self.encoder_stroke.state_dict(), \
+            'sketch_encoder_stroke_sel_%3f_epoch_%d.pth' % (sel,epoch))
         torch.save(self.decoder.state_dict(), \
-            'decoderRNN_sel_%3f_epoch_%d.pth' % (sel,epoch))
+            'sketch_decoder_sel_%3f_epoch_%d.pth' % (sel,epoch))
