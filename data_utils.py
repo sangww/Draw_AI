@@ -35,6 +35,124 @@ def rotate(xs, ys, theta):
     result = np.dot(mat, np.vstack((np.array(xs), np.array(ys))))
     return result[0, :], result[1, :]
 
+class Guided(Dataset):
+    def __init__(self, filename, n_styles = 5, seg_len=100, window=100, smooth_iterations=5, cutoff=0):
+        style_data = {}
+        self.n_styles = n_styles
+        encode = np.eye(n_styles).astype(np.float32)
+        self.style_encode = {}
+        self.original_data = {}
+        for i in range(n_styles):
+            self.style_encode[i] = encode[i]
+            style_data[i] = [[],[],[],[]]
+            self.original_data[i] = [[],[],[],[]]
+        self.cutoff = cutoff
+
+        with open(filename) as f:
+            # format:
+            # id, style, pointx, pointy, controlx, controly
+            f.readline() # discard first line
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                index, style, pointx, pointy, controlx, controly = line.split(",")
+                style = int(style)
+
+                pointx = np.array([float(i) for i in pointx.split(' ')], dtype=np.float32)
+                pointy = np.array([float(i) for i in pointy.split(' ')], dtype=np.float32)
+
+                assert len(pointx) == len(pointy)
+
+                if len(pointx) < window + 2:
+                    continue
+                    
+                # smooth with KZ filter
+                smoothx = kz(pointx, window, smooth_iterations)
+                smoothy = kz(pointy, window, smooth_iterations)
+
+                self.original_data[style][0].append(pointx)
+                self.original_data[style][1].append(pointy)
+                self.original_data[style][2].append(smoothx)
+                self.original_data[style][3].append(smoothy)
+
+                dx = pointx[1:] - pointx[:-1]
+                dy = pointy[1:] - pointy[:-1]
+                dcx = smoothx[1:] - smoothx[:-1]
+                dcy = smoothy[1:] - smoothy[:-1]
+                L = len(dx)
+
+                x_sliced = slice1d(dx.tolist()[self.cutoff : L-self.cutoff], seg_len)
+                y_sliced = slice1d(dy.tolist()[self.cutoff : L-self.cutoff], seg_len)
+                cx_sliced = slice1d(dcx.tolist()[self.cutoff : L-self.cutoff], seg_len)
+                cy_sliced = slice1d(dcy.tolist()[self.cutoff : L-self.cutoff], seg_len)
+                for i in range(len(x_sliced)):
+                    theta = np.random.uniform(0.0, 2*np.pi)
+                    #theta = 0.0
+                    new_x, new_y = rotate(x_sliced[i], y_sliced[i], theta)
+                    new_cx, new_cy = rotate(cx_sliced[i], cy_sliced[i], theta)
+                    style_data[style][0].append(new_x)
+                    style_data[style][1].append(new_y)
+                    style_data[style][2].append(new_cx)
+                    style_data[style][3].append(new_cy)
+        
+        result = {}
+        for i in range(n_styles):
+            result[i] = np.transpose(np.array(style_data[i], dtype=np.float32), (1, 0, 2))
+            # transpose to N, C, L
+        self.data_len = {}
+        for i in range(n_styles):
+            self.data_len[i] = result[i].shape[0]
+        for i in range(n_styles):
+            print ("Loaded %s segments of style %s" % (self.data_len[i], i))
+            print ("Shape: (%s, %s, %s)" % result[i].shape)
+            
+        self.data = result
+
+    def __len__(self):
+        s = 0
+        for i in range(self.n_styles):
+            s += self.data_len[i]
+        return s
+
+    def __getitem__(self, idx):
+        start = 0
+        for i in range(self.n_styles):
+            if idx < start + self.data_len[i]:
+                style = i
+                break
+            start += self.data_len[i]
+        return self.data[style][idx - start], self.style_encode[style]
+
+    def visualize_d(self, idx):
+        data, style = self[idx]
+        print("Encoded style: ", style)
+        plt.plot(data[0, :], label="dx")
+        plt.plot(data[1, :], label="dy")
+        plt.plot(data[2, :], label="dcx")
+        plt.plot(data[3, :], label="dcy")
+        plt.legend()
+
+    def visualize(self, idx):
+        data, style = self[idx]
+        print("Encoded style: ", style)
+        x = np.cumsum(data[0,:])
+        y = np.cumsum(data[1,:])
+        cx = np.cumsum(data[2,:])
+        cy = np.cumsum(data[3,:])
+        plt.scatter(x, y, s=1, label="original")
+        plt.scatter(cx, cy, s=1, label="smooth")
+        plt.legend()
+
+    def visualize_original(self, style, idx):
+        x = self.original_data[style][0][idx]
+        y = self.original_data[style][1][idx]
+        cx = self.original_data[style][2][idx]
+        cy = self.original_data[style][3][idx]
+        plt.scatter(x, y, s=1, label="original")
+        plt.scatter(cx, cy, s=1, label="smooth")
+        plt.legend()
+
 class SmoothCurve(Dataset):
     def __init__(self, filename, seg_len=100, window=100, smooth_iterations=5):
         style_data = {}
