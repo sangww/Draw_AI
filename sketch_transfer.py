@@ -227,7 +227,7 @@ class SketchTransfer():
         if self.KL_weight < 1.0:
             self.KL_weight += self.hp.KL_delta
 
-        if epoch > 0 and epoch % 20 == 0:
+        if epoch > 0 and epoch % self.hp.save_every == 0:
             self.save(epoch)
 
     def test_reconstruction(self, inputs, labels, greedy=False):
@@ -357,6 +357,8 @@ class SketchTransfer():
         torch.save(self.decoder.state_dict(), \
             'sketch_decoder_sel_%3f_epoch_%d.pth' % (sel,epoch))
         
+
+# only apply style label to stroke encoder
 class SketchTransfer_enc2():
     def __init__(self, hp):
         self.hp = hp
@@ -479,7 +481,7 @@ class SketchTransfer_enc2():
         if self.KL_weight < 1.0:
             self.KL_weight += self.hp.KL_delta
 
-        if epoch > 0 and epoch % 20 == 0:
+        if epoch > 0 and epoch % self.hp.save_every == 0:
             self.save(epoch)
 
     def test_reconstruction(self, inputs, labels, greedy=False):

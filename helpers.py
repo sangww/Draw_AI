@@ -25,6 +25,7 @@ class HParams():
         self.temperature = 0.4
         self.max_seq_length = 200
         self.Nmax = 100
+        self.save_every = 20
 
 hp = HParams()
 
