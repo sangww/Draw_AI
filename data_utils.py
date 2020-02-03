@@ -4,6 +4,119 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
+def distance(p1, p2):
+    return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+
+def interp(p1, p2, t):
+    return (1.0 - t) * p1 + t * p2
+
+def get_dir(p1, p2):
+    return (p2 - p1) / distance(p1, p2)
+
+def bezier_interp(p0, p1, p2, p3, t):
+    """Returns the bezier point at the time t."""
+    M = np.array([[-1, 3, -3, 1], \
+                [3, -6, 3, 0], \
+                [-3, 3, 0, 0], \
+                [1, 0, 0, 0]])
+    G = np.vstack((p0, p1, p2, p3))
+    T = np.array([[t*t*t, t*t, t, 1]])
+    result = T@M@G
+    return result[0]
+
+def normalizeControl(xs, ys, ts, dist=None):
+    # input: arry of (x, y) of smoothened control signal
+    # return: equidistant (x, y) points, and tangent vectors at each point
+
+    # determine average displacement and how many samples
+    N = len(xs)
+    assert N == len(ys)
+    xy = np.array([xs, ys]).T
+    if dist:
+        avg_dist = dist
+    else:
+        avg_dist = 0.0
+        for i in range(N-1):
+            d = distance(xy[i], xy[i+1])
+            avg_dist += d
+        avg_dist /= (N-1)
+    
+    new_points = []
+    new_times = []
+    last_point = xy[0]
+    last_time = ts[0]
+    progress = 0.0
+    from_origin = 0.0
+    for i in range(1, N):
+        this_point = xy[i]
+        this_time = ts[i]
+        this_distance = distance(this_point, last_point)
+        from_origin += this_distance
+        while progress + avg_dist < from_origin:
+            ratio = 1.0 - (from_origin - progress) / this_distance
+            new_points.append(interp(last_point, this_point, ratio))
+            new_times.append(interp(last_time, this_time, ratio))
+            progress += avg_dist
+        last_point = this_point.copy()
+        last_time = this_time
+
+    L = len(new_points)
+    tangents = []
+    tangents.append(get_dir(new_points[0], new_points[1]))
+    for i in range(1, L-1):
+        tangents.append(get_dir(new_points[i-1], new_points[i+1]))
+    tangents.append(get_dir(new_points[L-2], new_points[L-1]))
+
+    return np.array(new_points), np.array(new_times), np.array(tangents)
+
+
+def straigtenStroke(xs, ys, ts, control, control_times, tangents):
+    target_time = 0.0
+    stroke_idx = 0
+    new_points = []
+
+    stroke_xy = np.array((xs, ys)).T
+
+    # find the closest stroke point to the start
+    #dist = 10000.0
+    #for i in range(len(xs)):
+    #    d = distance(stroke_xy[i], control[0])
+    #    if d < dist:
+    #        dist = d
+    #        #stroke_idx = i
+
+    for i in range(len(control_times)):
+        t = control_times[i]
+        while ts[stroke_idx+1] < t:
+            stroke_idx += 1
+        if stroke_idx < 2:
+            p0 = stroke_xy[stroke_idx]
+            p1 = stroke_xy[stroke_idx]
+            p2 = stroke_xy[stroke_idx]
+            p3 = stroke_xy[stroke_idx + 1]
+        elif stroke_idx == len(xs) - 1:
+            p0 = stroke_xy[stroke_idx - 2]
+            p1 = stroke_xy[stroke_idx - 1]
+            p2 = stroke_xy[stroke_idx]
+            p3 = stroke_xy[stroke_idx]
+        else:
+            p0 = stroke_xy[stroke_idx - 2]
+            p1 = stroke_xy[stroke_idx - 1]
+            p2 = stroke_xy[stroke_idx]
+            p3 = stroke_xy[stroke_idx + 1]
+            
+        p = bezier_interp(p0, p1, p2, p3, (t - ts[stroke_idx]) / (ts[stroke_idx+1] - ts[stroke_idx]))
+        p0 = control[i]
+        dp = p - p0
+        tangent = tangents[i]
+        bitangent = np.array([-tangent[1], tangent[0]])
+        dx = np.dot(dp, tangent)
+        dy = np.dot(dp, bitangent)
+        new_points.append(np.array([dx, dy]))
+
+    return np.array(new_points)
+
+
 def kz(series, window, iterations):
     """KZ filter implementation
     series is a pandas series
@@ -34,6 +147,125 @@ def rotate(xs, ys, theta):
     mat = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
     result = np.dot(mat, np.vstack((np.array(xs), np.array(ys))))
     return result[0, :], result[1, :]
+
+class ControlRelative(Dataset):
+    def __init__(self, filename, n_styles = 5, seg_len=100, window=100, smooth_iterations=5, cutoff=0):
+        style_data = {}
+        self.n_styles = n_styles
+        encode = np.eye(n_styles).astype(np.float32)
+        self.style_encode = {}
+        self.original_data = {}
+        for i in range(n_styles):
+            self.style_encode[i] = encode[i]
+            style_data[i] = [[],[]]
+            self.original_data[i] = [[],[], [], []]
+        self.cutoff = cutoff
+        if isinstance(cutoff, tuple):
+            cutoff_left = cutoff[0]
+            cutoff_right = cutoff[1]
+        else:
+            cutoff_left = cutoff
+            cutoff_right = cutoff
+        with open(filename) as f:
+            # format:
+            # id, style, pointx, pointy, controlx, controly
+            f.readline() # discard first line
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                index, style, pointx, pointy, controlx, controly = line.split(",")
+                style = int(style)
+
+                point_times = np.array([i for i in range(len(pointx))])
+                pointx = np.array([float(i) for i in pointx.split(' ')], dtype=np.float32)
+                pointy = np.array([float(i) for i in pointy.split(' ')], dtype=np.float32)
+
+                assert len(pointx) == len(pointy)
+
+                if len(pointx) < window + 2:
+                    continue
+
+                    
+                # smooth with KZ filter
+                smooth_times = kz(point_times, window, smooth_iterations)
+                smoothx = kz(pointx, window, smooth_iterations)
+                smoothy = kz(pointy, window, smooth_iterations)
+                
+                self.original_data[style][0].append(pointx)
+                self.original_data[style][1].append(pointy)
+                self.original_data[style][2].append(smoothx)
+                self.original_data[style][3].append(smoothy)
+
+                control, control_times, tangents = normalizeControl(smoothx, smoothy, smooth_times, 1.5)
+    
+                stroke_delta = straigtenStroke(pointx, pointy, point_times, control, control_times, tangents)
+                dx = stroke_delta[:,0]
+                dy = stroke_delta[:,1]
+
+                L = len(dx)
+                x_sliced = slice1d(dx.tolist()[cutoff_left : L-cutoff_right], seg_len)
+                y_sliced = slice1d(dy.tolist()[cutoff_left : L-cutoff_right], seg_len)
+
+                for i in range(len(x_sliced)):
+                    style_data[style][0].append(x_sliced[i])
+                    style_data[style][1].append(y_sliced[i])
+
+        result = {}
+        for i in range(n_styles):
+            result[i] = np.transpose(np.array(style_data[i], dtype=np.float32), (1, 0, 2))
+            # transpose to N, C, L
+        self.data_len = {}
+        for i in range(n_styles):
+            self.data_len[i] = result[i].shape[0]
+        for i in range(n_styles):
+            print ("Loaded %s segments of style %s" % (self.data_len[i], i))
+            print ("Shape: (%s, %s, %s)" % result[i].shape)
+            
+        self.data = result
+
+    def __len__(self):
+        s = 0
+        for i in range(self.n_styles):
+            s += self.data_len[i]
+        return s
+
+    def __getitem__(self, idx):
+        start = 0
+        for i in range(self.n_styles):
+            if idx < start + self.data_len[i]:
+                style = i
+                break
+            start += self.data_len[i]
+        return self.data[style][idx - start], self.style_encode[style]
+
+    def visualize_d(self, idx):
+        data, style = self[idx]
+        print("Encoded style: ", style)
+        plt.plot(data[0, :], label="dx")
+        plt.plot(data[1, :], label="dy")
+        plt.legend()
+
+    def visualize(self, idx):
+        data, style = self[idx]
+        print("Encoded style: ", style)
+        x = np.cumsum(data[0,:])
+        y = np.cumsum(data[1,:])
+        #cx = np.cumsum(data[2,:])
+        #cy = np.cumsum(data[3,:])
+        plt.scatter(x, y, s=1, label="original")
+        #plt.scatter(cx, cy, s=1, label="smooth")
+        plt.legend()
+
+    def visualize_original(self, style, idx):
+        x = self.original_data[style][0][idx]
+        y = self.original_data[style][1][idx]
+        cx = self.original_data[style][2][idx]
+        cy = self.original_data[style][3][idx]
+        plt.scatter(x, y, s=1, label="original")
+        plt.scatter(cx, cy, s=1, label="smooth")
+        plt.legend()
+
 
 class Guided(Dataset):
     def __init__(self, filename, n_styles = 5, seg_len=100, window=100, smooth_iterations=5, cutoff=0):
