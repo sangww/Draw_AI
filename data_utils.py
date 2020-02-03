@@ -149,7 +149,7 @@ def rotate(xs, ys, theta):
     return result[0, :], result[1, :]
 
 class ControlRelative(Dataset):
-    def __init__(self, filename, n_styles = 5, seg_len=100, window=100, smooth_iterations=5, cutoff=0):
+    def __init__(self, filename, n_styles = 5, seg_len=100, window=100, smooth_iterations=5, cutoff=0, delta=1.5):
         style_data = {}
         self.n_styles = n_styles
         encode = np.eye(n_styles).astype(np.float32)
@@ -166,6 +166,7 @@ class ControlRelative(Dataset):
         else:
             cutoff_left = cutoff
             cutoff_right = cutoff
+        self.delta = delta
         with open(filename) as f:
             # format:
             # id, style, pointx, pointy, controlx, controly
@@ -197,7 +198,7 @@ class ControlRelative(Dataset):
                 self.original_data[style][2].append(smoothx)
                 self.original_data[style][3].append(smoothy)
 
-                control, control_times, tangents = normalizeControl(smoothx, smoothy, smooth_times, 1.5)
+                control, control_times, tangents = normalizeControl(smoothx, smoothy, smooth_times, delta)
     
                 stroke_delta = straigtenStroke(pointx, pointy, point_times, control, control_times, tangents)
                 dx = stroke_delta[:,0]
@@ -249,8 +250,12 @@ class ControlRelative(Dataset):
     def visualize(self, idx):
         data, style = self[idx]
         print("Encoded style: ", style)
-        x = np.cumsum(data[0,:])
-        y = np.cumsum(data[1,:])
+        N = len(data[0,:])
+        #tangents = np.vstack((np.ones(N), np.zeros(N))).T
+        #bitangents = np.vstack((np.zeros(N), np.ones(N))).T
+        control_x = np.array([i for i in range(N)]) * self.delta
+        x = control_x + data[0, :]
+        y = data[1,:]
         #cx = np.cumsum(data[2,:])
         #cy = np.cumsum(data[3,:])
         plt.scatter(x, y, s=1, label="original")
@@ -265,6 +270,7 @@ class ControlRelative(Dataset):
         plt.scatter(x, y, s=1, label="original")
         plt.scatter(cx, cy, s=1, label="smooth")
         plt.legend()
+        print("Length = ", len(x))
 
 
 class Guided(Dataset):

@@ -719,9 +719,8 @@ class SketchTransfer_1enc():
             self.save(epoch)
 
     def test_reconstruction(self, inputs, labels, greedy=False):
-        self.encoder_control.train(False)
+        self.encoder.train(False)
         self.decoder.train(False)
-        self.encoder_stroke.train(False)
 
         # L N C
         batch_size = inputs.size(1)
@@ -730,10 +729,7 @@ class SketchTransfer_1enc():
 
         # Encode
         stroke = inputs[:, :, :2]
-        control = inputs[:, :, 2:]
-        z1, _, __ = self.encoder_control(control)
-        z2, _, __ = self.encoder_stroke(stroke, labels)
-        z = torch.cat((z1, z2), dim=1)
+        z, _, __ = self.encoder(stroke, labels)
 
         sos = Variable(torch.Tensor([0.0, 0.0]).view(1,1,-1).cuda())
         s = sos
@@ -762,30 +758,34 @@ class SketchTransfer_1enc():
         #z_sample = np.array(seq_z)
         return x_sample, y_sample, seq_x, seq_y
 
-    def generate_with_control(self, control, stroke_latent, last=None, hidden_cell=None, greedy=False):
-        self.encoder_control.train(False)
+    def generate_with_latent(self, stroke_latent, steps=None, last=None, hidden_cell=None, greedy=False):
+        self.encoder.train(False)
         self.decoder.train(False)
-        self.encoder_stroke.train(False)
 
         # L N C
         batch_size = control.size(1)
         assert batch_size == 1
         assert batch_size == stroke_latent.size(0)
 
+        if not steps:
+            steps = self.hp.Nmax
+        #assert steps <= self.hp.Nmax
+
         #last_L = 0
         #if last:
         #    last_L = last.size(0)
 
-        z1, _, __ = self.encoder_control(control)
-        print(z1)
-        z = torch.cat((z1, stroke_latent), dim=1)
+        #z1, _, __ = self.encoder_control(control)
+        #print(z1)
+        #z = torch.cat((z1, stroke_latent), dim=1)
+        z = stroke_latent
 
         sos = Variable(torch.Tensor([0.0, 0.0]).view(1,1,-1).cuda())
         s = sos
         seq_x = []
         seq_y = []
         #hidden_cell = None
-        for i in range(control.size(0)):
+        for i in range(steps):
             decoder_inputs = torch.cat([s, z.unsqueeze(0)], 2)
 
             # decode:
