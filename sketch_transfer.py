@@ -840,9 +840,7 @@ class SketchTransfer_1enc():
 
     def save(self, epoch):
         sel = np.random.rand()
-        torch.save(self.encoder_control.state_dict(), \
-            'sketch_encoder_control_sel_%3f_epoch_%d.pth' % (sel,epoch))
-        torch.save(self.encoder_stroke.state_dict(), \
-            'sketch_encoder_stroke_sel_%3f_epoch_%d.pth' % (sel,epoch))
+        torch.save(self.encoder.state_dict(), \
+            'sketch_encoder_sel_%3f_epoch_%d.pth' % (sel,epoch))
         torch.save(self.decoder.state_dict(), \
             'sketch_decoder_sel_%3f_epoch_%d.pth' % (sel,epoch))
