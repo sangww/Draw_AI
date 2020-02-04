@@ -763,9 +763,8 @@ class SketchTransfer_1enc():
         self.decoder.train(False)
 
         # L N C
-        batch_size = control.size(1)
+        batch_size = stroke_latent.size(0)
         assert batch_size == 1
-        assert batch_size == stroke_latent.size(0)
 
         if not steps:
             steps = self.hp.Nmax
