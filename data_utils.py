@@ -129,10 +129,10 @@ def kz(series, window, iterations):
         #z = pd.rolling_mean(z, window=window, min_periods=1, center=True)
     return z.to_numpy()
 
-def slice1d(arr, L): # slice a numpy array
+def slice1d(arr, L, interval=1): # slice a numpy array
     assert len(arr) > L
     result = []
-    for i in range(len(arr) - L + 1):
+    for i in range(0, len(arr) - L + 1, interval):
         result.append(arr[i:i+L])
     return result
 
@@ -149,7 +149,7 @@ def rotate(xs, ys, theta):
     return result[0, :], result[1, :]
 
 class ControlRelative(Dataset):
-    def __init__(self, filename, n_styles = 5, seg_len=100, window=100, smooth_iterations=5, cutoff=0, delta=1.5):
+    def __init__(self, filename, n_styles = 5, seg_len=100, window=100, smooth_iterations=5, cutoff=0, delta=1.5, interval=1, small_data=False):
         style_data = {}
         self.n_styles = n_styles
         encode = np.eye(n_styles).astype(np.float32)
@@ -178,6 +178,10 @@ class ControlRelative(Dataset):
                 index, style, pointx, pointy, controlx, controly = line.split(",")
                 style = int(style)
 
+                if small_data:
+                    for i in range(4):
+                        f.readline()
+
                 point_times = np.array([i for i in range(len(pointx))])
                 pointx = np.array([float(i) for i in pointx.split(' ')], dtype=np.float32)
                 pointy = np.array([float(i) for i in pointy.split(' ')], dtype=np.float32)
@@ -205,8 +209,8 @@ class ControlRelative(Dataset):
                 dy = stroke_delta[:,1]
 
                 L = len(dx)
-                x_sliced = slice1d(dx.tolist()[cutoff_left : L-cutoff_right], seg_len)
-                y_sliced = slice1d(dy.tolist()[cutoff_left : L-cutoff_right], seg_len)
+                x_sliced = slice1d(dx.tolist()[cutoff_left : L-cutoff_right], seg_len, interval)
+                y_sliced = slice1d(dy.tolist()[cutoff_left : L-cutoff_right], seg_len, interval)
 
                 for i in range(len(x_sliced)):
                     style_data[style][0].append(x_sliced[i])
