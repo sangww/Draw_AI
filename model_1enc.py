@@ -351,6 +351,8 @@ class SketchTransfer_enc_dec():
         stroke = inputs[:, :, :2]
         z, _, __ = self.encoder(stroke, labels)
 
+        z = torch.cat([z, labels], dim=1)
+
         sos = Variable(torch.Tensor([0.0, 0.0]).view(1,1,-1).cuda())
         s = sos
         seq_x = []
@@ -378,7 +380,7 @@ class SketchTransfer_enc_dec():
         #z_sample = np.array(seq_z)
         return x_sample, y_sample, seq_x, seq_y
 
-    def generate_with_latent(self, stroke_latent, steps=None, last=None, hidden_cell=None, greedy=False):
+    def generate_with_latent(self, stroke_latent, labels, steps=None, last=None, hidden_cell=None, greedy=False):
         self.encoder.train(False)
         self.decoder.train(False)
 
@@ -398,6 +400,8 @@ class SketchTransfer_enc_dec():
         #print(z1)
         #z = torch.cat((z1, stroke_latent), dim=1)
         z = stroke_latent
+
+        z = torch.cat([z, labels], dim=1)
 
         sos = Variable(torch.Tensor([0.0, 0.0]).view(1,1,-1).cuda())
         s = sos
