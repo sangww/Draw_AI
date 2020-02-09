@@ -575,7 +575,7 @@ class SketchTransfer_nolabel():
 
         # Encode
         stroke = inputs[:, :, :2]
-        z, _, __ = self.encoder(stroke, labels)
+        z, _, __ = self.encoder(stroke, None)
 
         sos = Variable(torch.Tensor([0.0, 0.0]).view(1,1,-1).cuda())
         s = sos
@@ -604,7 +604,7 @@ class SketchTransfer_nolabel():
         #z_sample = np.array(seq_z)
         return x_sample, y_sample, seq_x, seq_y
 
-    def generate_with_latent(self, stroke_latent, labels, steps=None, last=None, hidden_cell=None, greedy=False):
+    def generate_with_latent(self, stroke_latent, steps=None, last=None, hidden_cell=None, greedy=False):
         self.encoder.train(False)
         self.decoder.train(False)
 
