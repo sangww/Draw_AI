@@ -148,6 +148,145 @@ def rotate(xs, ys, theta):
     result = np.dot(mat, np.vstack((np.array(xs), np.array(ys))))
     return result[0, :], result[1, :]
 
+class MixData(Dataset):
+    def __init__(self, filename, generated_files, n_styles=7, seg_len=100, window=100, smooth_iterations=5, cutoff=0, delta=1.5, interval=1):
+        style_data = {}
+        self.n_styles = n_styles
+        encode = np.eye(n_styles).astype(np.float32)
+        self.style_encode = {}
+        self.original_data = {}
+        for i in range(n_styles):
+            self.style_encode[i] = encode[i]
+            style_data[i] = [[],[]]
+            self.original_data[i] = [[],[], [], []]
+        self.cutoff = cutoff
+        if isinstance(cutoff, tuple):
+            cutoff_left = cutoff[0]
+            cutoff_right = cutoff[1]
+        else:
+            cutoff_left = cutoff
+            cutoff_right = cutoff
+        self.delta = delta
+        with open(filename) as f:
+            f.readline() # discard first line
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                index, style, pointx, pointy, controlx, controly = line.split(",")
+                style = int(style)
+                point_times = np.array([i for i in range(len(pointx))])
+                pointx = np.array([float(i) for i in pointx.split(' ')], dtype=np.float32)
+                pointy = np.array([float(i) for i in pointy.split(' ')], dtype=np.float32)
+                assert len(pointx) == len(pointy)
+                if len(pointx) < window + 2:
+                    continue
+                # smooth with KZ filter
+                smooth_times = kz(point_times, window, smooth_iterations)
+                smoothx = kz(pointx, window, smooth_iterations)
+                smoothy = kz(pointy, window, smooth_iterations)
+                self.original_data[style][0].append(pointx)
+                self.original_data[style][1].append(pointy)
+                self.original_data[style][2].append(smoothx)
+                self.original_data[style][3].append(smoothy)
+                control, control_times, tangents = normalizeControl(smoothx, smoothy, smooth_times, delta)
+                stroke_delta = straigtenStroke(pointx, pointy, point_times, control, control_times, tangents)
+                dx = stroke_delta[:,0]
+                dy = stroke_delta[:,1]
+                L = len(dx)
+                x_sliced = slice1d(dx.tolist()[cutoff_left : L-cutoff_right], seg_len, interval)
+                y_sliced = slice1d(dy.tolist()[cutoff_left : L-cutoff_right], seg_len, interval)
+                for i in range(len(x_sliced)):
+                    style_data[style][0].append(x_sliced[i])
+                    style_data[style][1].append(y_sliced[i])
+        style = 5 # hard code!!
+        window=10
+        smooth_iterations=10
+        delta=1.1
+        for fname in generated_files:
+            x, y = [], []
+            with open(fname) as f:
+                for line in f.readlines():
+                    x1, y1 = line.split(',')
+                    x.append(float(x1))
+                    y.append(float(y1))
+            pointx = np.cumsum(x)
+            pointy = np.cumsum(y)
+            point_times = np.array([i for i in range(len(pointx))])
+            smooth_times = kz(point_times, window, smooth_iterations)
+            smoothx = kz(pointx, window, smooth_iterations)
+            smoothy = kz(pointy, window, smooth_iterations)
+            self.original_data[style][0].append(pointx)
+            self.original_data[style][1].append(pointy)
+            self.original_data[style][2].append(smoothx)
+            self.original_data[style][3].append(smoothy)
+            control, control_times, tangents = normalizeControl(smoothx, smoothy, smooth_times, delta)
+            stroke_delta = straigtenStroke(pointx, pointy, point_times, control, control_times, tangents)
+            dx = stroke_delta[:,0]
+            dy = stroke_delta[:,1]
+            L = len(dx)
+            x_sliced = slice1d(dx.tolist()[cutoff_left : L-cutoff_right], seg_len, interval)
+            y_sliced = slice1d(dy.tolist()[cutoff_left : L-cutoff_right], seg_len, interval)
+            for i in range(len(x_sliced)):
+                style_data[style][0].append(x_sliced[i])
+                style_data[style][1].append(y_sliced[i])
+            style += 1
+
+        result = {}
+        for i in range(n_styles):
+            result[i] = np.transpose(np.array(style_data[i], dtype=np.float32), (1, 0, 2))
+            # transpose to N, C, L
+        self.data_len = {}
+        for i in range(n_styles):
+            self.data_len[i] = result[i].shape[0]
+        for i in range(n_styles):
+            print ("Loaded %s segments of style %s" % (self.data_len[i], i))
+            print ("Shape: (%s, %s, %s)" % result[i].shape)
+            
+        self.data = result
+
+    def __len__(self):
+        s = 0
+        for i in range(self.n_styles):
+            s += self.data_len[i]
+        return s
+
+    def __getitem__(self, idx):
+        start = 0
+        for i in range(self.n_styles):
+            if idx < start + self.data_len[i]:
+                style = i
+                break
+            start += self.data_len[i]
+        return self.data[style][idx - start], self.style_encode[style]
+
+    def visualize_d(self, idx):
+        data, style = self[idx]
+        print("Encoded style: ", style)
+        plt.plot(data[0, :], label="dx")
+        plt.plot(data[1, :], label="dy")
+        plt.legend()
+
+    def visualize(self, idx):
+        data, style = self[idx]
+        print("Encoded style: ", style)
+        N = len(data[0,:])
+        control_x = np.array([i for i in range(N)]) * self.delta
+        x = control_x + data[0, :]
+        y = data[1,:]
+        plt.scatter(x, y, s=1, label="original")
+        plt.legend()
+
+    def visualize_original(self, style, idx):
+        x = self.original_data[style][0][idx]
+        y = self.original_data[style][1][idx]
+        cx = self.original_data[style][2][idx]
+        cy = self.original_data[style][3][idx]
+        plt.scatter(x, y, s=1, label="original")
+        plt.scatter(cx, cy, s=1, label="smooth")
+        plt.legend()
+        print("Length = ", len(x))
+
 class ControlRelative(Dataset):
     def __init__(self, filename, n_styles = 5, seg_len=100, window=100, smooth_iterations=5, cutoff=0, delta=1.5, interval=1, small_data=False):
         style_data = {}

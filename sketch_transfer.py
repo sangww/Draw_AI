@@ -105,6 +105,47 @@ class LSTMDecoder(nn.Module):
 
         return pi,mu_x,mu_y,sigma_x,sigma_y,rho_xy,hidden,cell
 
+class InitDecoder_export(nn.Module):
+    def __init__(self, hp):
+        super(InitDecoder_export, self).__init__()
+        self.hp = hp
+        self.fc_hc = nn.Linear(hp.Nz_dec, 2*hp.dec_hidden_size)
+
+    def forward(self, z):
+        hidden,cell = torch.split(torch.tanh(self.fc_hc(z)),self.hp.dec_hidden_size,1)
+        hidden = hidden.unsqueeze(0).contiguous()
+        cell = cell.unsqueeze(0).contiguous()
+        return hidden, cell
+
+class LSTMDecoder_export(nn.Module):
+    def __init__(self, hp):
+        super(LSTMDecoder_export, self).__init__()
+        self.hp = hp
+        self.fc_hc = nn.Linear(hp.Nz_dec, 2*hp.dec_hidden_size)
+        self.lstm = nn.LSTM(hp.Nz_dec + hp.input_dim, hp.dec_hidden_size, dropout=hp.dropout)
+        self.fc_params = nn.Linear(hp.dec_hidden_size, 6*hp.M) # no pen state for now...
+
+    def forward(self, inputs, hidden, cell):
+        hidden_cell = (hidden, cell)
+        outputs,(hidden,cell) = self.lstm(inputs, hidden_cell)
+
+        y = self.fc_params(hidden.view(-1, self.hp.dec_hidden_size))
+
+        params = torch.split(y,6,1)
+        params_mixture = torch.stack(params[:])
+        
+        pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy = torch.split(params_mixture, 1, 2)
+        len_out = 1
+
+        pi = F.softmax(pi.transpose(0,1).squeeze()).view(len_out,-1,self.hp.M)
+        sigma_x = torch.exp(sigma_x.transpose(0,1).squeeze()).view(len_out,-1,self.hp.M)
+        sigma_y = torch.exp(sigma_y.transpose(0,1).squeeze()).view(len_out,-1,self.hp.M)
+        rho_xy = torch.tanh(rho_xy.transpose(0,1).squeeze()).view(len_out,-1,self.hp.M)
+        mu_x = mu_x.transpose(0,1).squeeze().contiguous().view(len_out,-1,self.hp.M)
+        mu_y = mu_y.transpose(0,1).squeeze().contiguous().view(len_out,-1,self.hp.M)
+
+        return pi,mu_x,mu_y,sigma_x,sigma_y,rho_xy,hidden,cell
+
 class SketchTransfer():
     def __init__(self, hp):
         self.hp = hp

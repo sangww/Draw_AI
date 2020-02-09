@@ -156,13 +156,6 @@ class SketchTransfer_1enc():
         if not steps:
             steps = self.hp.Nmax
         #assert steps <= self.hp.Nmax
-
-        #last_L = 0
-        #if last:
-        #    last_L = last.size(0)
-
-        #z1, _, __ = self.encoder_control(control)
-        #print(z1)
         #z = torch.cat((z1, stroke_latent), dim=1)
         z = stroke_latent
 
@@ -170,10 +163,8 @@ class SketchTransfer_1enc():
         s = sos
         seq_x = []
         seq_y = []
-        #hidden_cell = None
         for i in range(steps):
             decoder_inputs = torch.cat([s, z.unsqueeze(0)], 2)
-
             # decode:
             self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, \
                 self.rho_xy, hidden, cell = \
