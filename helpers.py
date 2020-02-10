@@ -5,6 +5,7 @@ class HParams():
         self.input_dim = 2
         self.style_dim = 3
         self.enc_layers = 1
+        self.dec_layers = 1
         self.enc_hidden_size = 64  # 256
         self.dec_hidden_size = 128  # 512
         self.Nz = 2   # latent dimension

@@ -53,22 +53,30 @@ class LSTMDecoder(nn.Module):
         self.hp = hp
         # to init hidden and cell from z:
         if style_label:
-            self.fc_hc = nn.Linear(hp.Nz_dec + hp.style_dim, 2*hp.dec_hidden_size)
-            self.lstm = nn.LSTM(hp.Nz_dec + hp.style_dim + hp.input_dim, hp.dec_hidden_size, dropout=hp.dropout)
+            self.fc_hc = nn.Linear(hp.Nz_dec + hp.style_dim, 2*hp.dec_hidden_size*hp.dec_layers)
+            self.lstm = nn.LSTM(hp.Nz_dec + hp.style_dim + hp.input_dim, hp.dec_hidden_size, hp.dec_layers, dropout=hp.dropout)
         else:
-            self.fc_hc = nn.Linear(hp.Nz_dec, 2*hp.dec_hidden_size)
-            self.lstm = nn.LSTM(hp.Nz_dec + hp.input_dim, hp.dec_hidden_size, dropout=hp.dropout)
+            self.fc_hc = nn.Linear(hp.Nz_dec, 2*hp.dec_hidden_size*hp.dec_layers)
+            self.lstm = nn.LSTM(hp.Nz_dec + hp.input_dim, hp.dec_hidden_size, hp.dec_layers, dropout=hp.dropout)
         # create proba distribution parameters from hiddens:
         self.fc_params = nn.Linear(hp.dec_hidden_size, 6*hp.M) # no pen state for now...
 
     def forward(self, inputs, z, labels=None, hidden_cell=None):
-        #print ("decoder inputs", inputs.size())
         if labels is not None:
             z = torch.cat([z, labels], dim=1)
         if hidden_cell is None:
             # then we must init from z
-            hidden,cell = torch.split(torch.tanh(self.fc_hc(z)),self.hp.dec_hidden_size,1)
-            hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
+            hidden,cell = torch.split(torch.tanh(self.fc_hc(z)), self.hp.dec_hidden_size * self.hp.dec_layers, 1)
+            if self.hp.dec_layers == 1:
+                hidden_cell = (hidden.unsqueeze(0).contiguous(), cell.unsqueeze(0).contiguous())
+            else:
+                batch_size = hidden.size(0)
+                hidden = hidden.reshape((batch_size, self.hp.dec_layers, -1)).permute(1, 0, 2).contiguous()
+                cell = cell.reshape((batch_size, self.hp.dec_layers, -1)).permute(1, 0, 2).contiguous()
+                hidden_cell = (hidden, cell)
+
+                #hidden = torch.zeros(self.hp.enc_layers*2, batch_size, self.hp.enc_hidden_size).cuda()
+                #cell = torch.zeros(self.hp.enc_layers*2, batch_size, self.hp.enc_hidden_size).cuda()
         outputs,(hidden,cell) = self.lstm(inputs, hidden_cell)
 
         #print ("decoder outputs", outputs.size())
@@ -76,18 +84,16 @@ class LSTMDecoder(nn.Module):
         # in training we feed the lstm with the whole input in one shot
         # and use all outputs contained in 'outputs', while in generate
         # mode we just feed with the last generated sample:
-        if self.training:
-            y = self.fc_params(outputs.view(-1, self.hp.dec_hidden_size))
-        else:
-            y = self.fc_params(hidden.view(-1, self.hp.dec_hidden_size))
+        #if self.training:
+        y = self.fc_params(outputs.view(-1, self.hp.dec_hidden_size))
+        #else:
+        #    y = self.fc_params(hidden.view(-1, self.hp.dec_hidden_size*self.hp.dec_layers))
 
-        #print ("y", y.size())
 
         params = torch.split(y,6,1)
         #for i, item in enumerate(params):
         #    print (i, item.size())
         params_mixture = torch.stack(params[:]) # trajectory
-        #print("params mixture", params_mixture.size())
         pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy = torch.split(params_mixture, 1, 2)
 
         #for item in [pi, mu_x, mu_y, sigma_x, sigma_y, rho_xy]:
