@@ -644,6 +644,65 @@ class SketchTransfer_nolabel():
         #z_sample = np.array(seq_z)
         return x_sample, y_sample, seq_x, seq_y
 
+    def generate_sequence(self, latent, steps, ts_sequence=None, hidden_cell=None):
+        self.decoder.train(False)
+        batch_size = latent.size(0)
+        assert batch_size == 1
+        z = latent
+
+        if ts_sequence is None:
+            sos = Variable(torch.Tensor([0.0, 0.0]).view(1,1,-1).cuda())
+            s = sos
+        else:
+            # L N C
+            seq_len = ts_sequence.size(0)
+            s = ts_sequence[seq_len-1, :, :].view(1,1,-1)
+
+        seq_x = []
+        seq_y = []
+        for i in range(steps):
+            decoder_inputs = torch.cat([s, z.unsqueeze(0)], 2)
+
+            self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, \
+                self.rho_xy, hidden, cell = \
+                    self.decoder(decoder_inputs, z, None, hidden_cell)
+            hidden_cell = (hidden, cell)
+            
+            s, dx, dy = self.sample_next_state(False)
+
+            seq_x.append(dx)
+            seq_y.append(dy)
+        return s, seq_x, seq_y, hidden_cell
+
+    def generate_full_sequence(self, latent, steps, ts_sequence=None, hidden_cell=None):
+        self.decoder.train(False)
+        batch_size = latent.size(0)
+        assert batch_size == 1
+        z = latent
+
+        if ts_sequence is None:
+            sos = Variable(torch.Tensor([0.0, 0.0]).view(1,1,-1).cuda())
+            ts_sequence = sos
+
+        seq_x = []
+        seq_y = []
+        for i in range(steps):
+            seq_len = ts_sequence.size(0)
+            z_stack = torch.stack([z] * (seq_len))
+            decoder_inputs = torch.cat([ts_sequence, z_stack], 2)
+
+            self.pi, self.mu_x, self.mu_y, self.sigma_x, self.sigma_y, \
+                self.rho_xy, hidden, cell = \
+                    self.decoder(decoder_inputs, z, None, hidden_cell)
+            hidden_cell = (hidden, cell)
+            
+            s, dx, dy = self.sample_next_state(False)
+            ts_sequence = torch.cat([ts_sequence, s], 0)
+
+            seq_x.append(dx)
+            seq_y.append(dy)
+        return ts_sequence, seq_x, seq_y, hidden_cell
+
     def sample_next_state(self, greedy=False):
 
         def adjust_temp(pi_pdf):

@@ -117,24 +117,32 @@ class InitDecoder_export(nn.Module):
     def __init__(self, hp):
         super(InitDecoder_export, self).__init__()
         self.hp = hp
-        self.fc_hc = nn.Linear(hp.Nz_dec, 2*hp.dec_hidden_size)
+        self.fc_hc = nn.Linear(hp.Nz_dec, 2*hp.dec_hidden_size*hp.dec_layers)
 
     def forward(self, z):
-        hidden,cell = torch.split(torch.tanh(self.fc_hc(z)),self.hp.dec_hidden_size,1)
-        hidden = hidden.unsqueeze(0).contiguous()
-        cell = cell.unsqueeze(0).contiguous()
+        hidden,cell = torch.split(torch.tanh(self.fc_hc(z)), self.hp.dec_hidden_size * self.hp.dec_layers, 1)
+        if self.hp.dec_layers == 1:
+            hidden = hidden.unsqueeze(0).contiguous()
+            cell = cell.unsqueeze(0).contiguous()
+        else:
+            batch_size = 1
+            #hidden = hidden.reshape((batch_size, int(self.hp.dec_layers), -1)).permute(1, 0, 2).contiguous()
+            #cell = cell.reshape((batch_size, int(self.hp.dec_layers), -1)).permute(1, 0, 2).contiguous()
+            shape = (1, 2, -1)
+            hidden = hidden.view(shape).permute(1, 0, 2).contiguous()
+            cell = cell.view(shape).permute(1, 0, 2).contiguous()
         return hidden, cell
 
 class LSTMDecoder_export(nn.Module):
     def __init__(self, hp):
         super(LSTMDecoder_export, self).__init__()
         self.hp = hp
-        self.fc_hc = nn.Linear(hp.Nz_dec, 2*hp.dec_hidden_size)
-        self.lstm = nn.LSTM(hp.Nz_dec + hp.input_dim, hp.dec_hidden_size, dropout=hp.dropout)
-        self.fc_params = nn.Linear(hp.dec_hidden_size, 6*hp.M) # no pen state for now...
+        self.fc_hc = nn.Linear(hp.Nz_dec, 2*hp.dec_hidden_size*hp.dec_layers) # unused, just for consistency
+        self.lstm = nn.LSTM(hp.Nz_dec + hp.input_dim, hp.dec_hidden_size, hp.dec_layers, dropout=hp.dropout)
+        self.fc_params = nn.Linear(hp.dec_hidden_size, 6*hp.M) 
 
-    def forward(self, inputs, hidden, cell):
-        hidden_cell = (hidden, cell)
+    def forward(self, inputs, hidden_cell):
+        #hidden_cell = (hidden, cell)
         outputs,(hidden,cell) = self.lstm(inputs, hidden_cell)
 
         y = self.fc_params(hidden.view(-1, self.hp.dec_hidden_size))
