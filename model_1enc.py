@@ -513,8 +513,7 @@ class SketchTransfer_nolabel():
         self.decoder.train()
 
         for i, data in enumerate(dataloader):
-            inputs, labels = data
-            inputs, labels = Variable(inputs).cuda(), Variable(labels).cuda()
+            inputs = Variable(data).cuda()
             batch_size = inputs.size(0)
 
             # N C L -> L N C
@@ -523,7 +522,7 @@ class SketchTransfer_nolabel():
             assert batch_size == inputs.size(1)
             assert self.hp.Nmax == inputs.size(0)
 
-            stroke = inputs[:, :, :2]
+            stroke = inputs[:, :, :2]   
             z, self.mu_stroke, self.sigma_stroke = self.encoder(stroke, None)
 
             sos = torch.stack([torch.Tensor([0.0, 0.0])] * batch_size).cuda().unsqueeze(0)
@@ -564,14 +563,13 @@ class SketchTransfer_nolabel():
         if epoch > 0 and epoch % self.hp.save_every == 0:
             self.save(epoch)
 
-    def test_reconstruction(self, inputs, labels, greedy=False):
+    def test_reconstruction(self, inputs, greedy=False):
         self.encoder.train(False)
         self.decoder.train(False)
 
         # L N C
         batch_size = inputs.size(1)
         assert batch_size == 1
-        assert batch_size == labels.size(0)
 
         # Encode
         stroke = inputs[:, :, :2]

@@ -41,6 +41,7 @@ hidden_cells = {}
 ts_seqs = {} # tensor size=L,N,C
 latents = {}
 last_times = {}
+number_to_generate = {}
 number_new_points = 0
 
 def clear_sequences(sequences):
@@ -49,6 +50,7 @@ def clear_sequences(sequences):
         ts_seqs[i] = None
         hidden_cells[i] = None
         last_times[i] = 0
+        number_to_generate[i] = 0
 
 def get_all_latent():
     for m in range(rows):
@@ -67,7 +69,9 @@ async def generator(seq, m, n, steps):
     hidden_cells[idx] = hc
     new_seq = [[x, y] for x,y in zip(seq_x, seq_y)]
     sequences[idx] += new_seq
-    return seq
+    if m == 0 and n == 0:
+        print ("send length = ", len(new_seq))
+    return new_seq
 
 @sio.on('message')
 async def print_message(sid, message):
@@ -88,8 +92,11 @@ async def request_points(sid, number_and_timestamp):
             if timestamp - last_times[idx] < 10:
                 continue
             last_times[idx] = timestamp
-            seq = await generator(sequences[idx], m, n, number)
-            await sio.emit('sketch' + str(idx), seq)
+            number_to_generate[idx] += number
+            if number_to_generate[idx] > 15:
+                seq = await generator(sequences[idx], m, n, number_to_generate[idx])
+                await sio.emit("stroke", {"id": idx, "seq": seq})
+                number_to_generate[idx] = 0
 
 async def hello(request):
     return web.Response(text="Hello, world")

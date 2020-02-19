@@ -23,6 +23,30 @@ def bezier_interp(p0, p1, p2, p3, t):
     T = np.array([[t*t*t, t*t, t, 1]])
     result = T@M@G
     return result[0]
+    
+def resample(xs, ys, N):
+    xy = np.array([xs, ys]).T
+    avg_dist = 0.0
+    for i in range(len(xs)-1):
+        d = distance(xy[i], xy[i+1])
+        avg_dist += d
+    avg_dist /= (N-1)
+
+    new_points = []
+    last_point = xy[0]
+    progress = 0.0
+    from_origin = 0.0
+    for i in range(1, len(xs)):
+        this_point = xy[i]
+        this_distance = distance(this_point, last_point)
+        from_origin += this_distance
+        while progress + avg_dist < from_origin:
+            ratio = 1.0 - (from_origin - progress) / this_distance
+            new_points.append(interp(last_point, this_point, ratio))
+            progress += avg_dist
+        last_point = this_point.copy()
+
+    return np.array(new_points)
 
 def normalizeControl(xs, ys, ts, dist=None):
     # input: arry of (x, y) of smoothened control signal
@@ -147,6 +171,17 @@ def rotate(xs, ys, theta):
     mat = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
     result = np.dot(mat, np.vstack((np.array(xs), np.array(ys))))
     return result[0, :], result[1, :]
+
+class FromNpy(Dataset):
+    def __init__(self, filename):
+        self.data = np.load(filename)
+
+    def __len__(self):
+        return self.data.shape[0]
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
 
 class MixData(Dataset):
     def __init__(self, filename, generated_files, n_styles=7, seg_len=100, window=100, smooth_iterations=5, cutoff=0, delta=1.5, interval=1):
